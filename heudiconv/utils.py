@@ -39,7 +39,8 @@ seqinfo_fields = [
     'patient_age',           # 22
     'patient_sex',           # 23
     'date',                  # 24
-    'series_uid'             # 25
+    'series_uid',            # 25
+    'example_dcm_file_path'  # 26
  ]
 
 SeqInfo = namedtuple('SeqInfo', seqinfo_fields)
@@ -105,7 +106,7 @@ def docstring_parameter(*sub):
 def anonymize_sid(sid, anon_sid_cmd):
     import sys
     from subprocess import check_output
-    
+
     cmd = [anon_sid_cmd, sid]
     shell_return = check_output(cmd)
 
@@ -114,7 +115,7 @@ def anonymize_sid(sid, anon_sid_cmd):
         anon_sid = shell_return.decode()
     else:
         anon_sid = shell_return
-    
+
     return anon_sid.strip()
 
 
