@@ -19,10 +19,7 @@ from nipype.utils.filemanip import which
 import logging
 lgr = logging.getLogger(__name__)
 
-if sys.version_info[0] > 2:
-    from json.decoder import JSONDecodeError
-else:
-    JSONDecodeError = ValueError
+from json.decoder import JSONDecodeError
 
 
 seqinfo_fields = [
@@ -30,8 +27,8 @@ seqinfo_fields = [
     'example_dcm_file',      # 1
     'series_id',             # 2
     'dcm_dir_name',          # 3
-    'unspecified2',          # 4
-    'unspecified3',          # 5
+    'series_files',          # 4
+    'unspecified',           # 5
     'dim1', 'dim2', 'dim3', 'dim4', # 6, 7, 8, 9
     'TR', 'TE',              # 10, 11
     'protocol_name',         # 12
@@ -116,9 +113,7 @@ def anonymize_sid(sid, anon_sid_cmd):
     cmd = [anon_sid_cmd, sid]
     shell_return = check_output(cmd)
 
-    if all([sys.version_info[0] > 2,
-            isinstance(shell_return, bytes),
-            isinstance(sid, str)]):
+    if isinstance(shell_return, bytes) and isinstance(sid, str):
         anon_sid = shell_return.decode()
     else:
         anon_sid = shell_return
@@ -186,7 +181,7 @@ def load_json(filename):
         raise
 
     return data
-    
+
 
 def assure_no_file_exists(path):
     """Check if file or symlink (git-annex?) exists, and if so -- remove"""
@@ -491,8 +486,25 @@ def create_tree(path, tree, archives_leading_dir=True):
             create_tree(full_name, load, archives_leading_dir=archives_leading_dir)
         else:
             with open(full_name, 'w') as f:
-                if sys.version_info[0] == 2 and not isinstance(load, str):
-                    load = load.encode('utf-8')
                 f.write(load)
         if executable:
             os.chmod(full_name, os.stat(full_name).st_mode | stat.S_IEXEC)
+
+
+def get_typed_attr(obj, attr, _type, default=None):
+    """
+    Typecasts an object's named attribute. If the attribute cannot be
+    converted, the default value is returned instead.
+
+    Parameters
+    ----------
+    obj: Object
+    attr: Attribute
+    _type: Type
+    default: value, optional
+    """
+    try:
+        val = _type(getattr(obj, attr, default))
+    except (TypeError, ValueError):
+        return default
+    return val

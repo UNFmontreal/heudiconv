@@ -1,3 +1,4 @@
+import filelock
 import os
 import os.path as op
 import logging
@@ -32,6 +33,7 @@ from .dicoms import (
     compress_dicoms
 )
 
+LOCKFILE = 'heudiconv.lock'
 lgr = logging.getLogger(__name__)
 
 
@@ -70,8 +72,7 @@ def conversion_info(subject, outdir, info, filegroup, ses):
                 try:
                     files = filegroup[item]
                 except KeyError:
-                    PY3 = sys.version_info[0] >= 3
-                    files = filegroup[(str if PY3 else unicode)(item)]
+                    files = filegroup[str(item)]
                 outprefix = template.format(**parameters)
                 convert_info.append((op.join(outpath, outprefix),
                                     outtype, files))
@@ -79,8 +80,8 @@ def conversion_info(subject, outdir, info, filegroup, ses):
 
 
 def prep_conversion(sid, dicoms, outdir, heuristic, converter, anon_sid,
-                   anon_outdir, with_prov, ses, bids_options, seqinfo, min_meta,
-                   overwrite, dcmconfig):
+                    anon_outdir, with_prov, ses, bids_options, seqinfo, 
+                    min_meta, overwrite, dcmconfig, grouping):
     if dicoms:
         lgr.info("Processing %d dicoms", len(dicoms))
     elif seqinfo:
@@ -156,16 +157,17 @@ def prep_conversion(sid, dicoms, outdir, heuristic, converter, anon_sid,
         # So either it would need to be brought back or reconsidered altogether
         # (since no sample data to test on etc)
     else:
-        # TODO -- might have been done outside already!
-        # MG -- will have to try with both dicom template, files
         assure_no_file_exists(target_heuristic_filename)
         safe_copyfile(heuristic.filename, target_heuristic_filename)
         if dicoms:
             seqinfo = group_dicoms_into_seqinfos(
                 dicoms,
+                grouping,
                 file_filter=getattr(heuristic, 'filter_files', None),
                 dcmfilter=getattr(heuristic, 'filter_dicom', None),
-                grouping=None)
+                flatten=True,
+                custom_grouping=getattr(heuristic, 'grouping', None))
+
         seqinfo_list = list(seqinfo.keys())
         filegroup = {si.series_id: x for si, x in seqinfo.items()}
         dicominfo_file = op.join(idir, 'dicominfo%s.tsv' % ses_suffix)
@@ -210,14 +212,23 @@ def prep_conversion(sid, dicoms, outdir, heuristic, converter, anon_sid,
         clear_temp_dicoms(item_dicoms)
 
     if bids_options is not None and 'notop' not in bids_options:
-        if seqinfo:
-            keys = list(seqinfo)
-            add_participant_record(anon_outdir,
-                                   anon_sid,
-                                   keys[0].patient_age,
-                                   keys[0].patient_sex)
-        populate_bids_templates(anon_outdir,
-                                getattr(heuristic, 'DEFAULT_FIELDS', {}))
+        lockfile = op.join(anon_outdir, LOCKFILE)
+        if op.exists(lockfile):
+            lgr.warning("Existing lockfile found in {0} - waiting for the "
+                        "lock to be released. To set a timeout limit, set "
+                        "the HEUDICONV_FILELOCK_TIMEOUT environmental variable "
+                        "to a value in seconds. If this process hangs, it may "
+                        "require a manual deletion of the {0}.".format(lockfile))
+        timeout = os.getenv("HEUDICONV_LOCKFILE_TIMEOUT", -1)
+        with filelock.SoftFileLock(lockfile, timeout=timeout):
+            if seqinfo:
+                keys = list(seqinfo)
+                add_participant_record(anon_outdir,
+                                       anon_sid,
+                                       keys[0].patient_age,
+                                       keys[0].patient_sex)
+            populate_bids_templates(anon_outdir,
+                                    getattr(heuristic, 'DEFAULT_FIELDS', {}))
 
 
 def convert(items, converter, scaninfo_suffix, custom_callable, with_prov,

@@ -124,7 +124,6 @@ def main(argv=None):
 
     if args.debug:
         setup_exceptionhook()
-
     process_args(args)
 
 
@@ -140,8 +139,11 @@ def get_parser():
                        '(can be compressed) are supported in addition to '
                        'directory. All matching tarballs for a subject are '
                        'extracted and their content processed in a single '
-                       'pass. Note that you might need to surround the value '
-                       'with quotes to avoid {...} being considered by shell')
+                       'pass. If multiple tarballs are found, each is '
+                       'assumed to be a separate session and the --ses '
+                       'argument is ignored. Note that you might need to '
+                       'surround the value with quotes to avoid {...} being '
+                       'considered by shell')
     group.add_argument('--files', nargs='*',
                        help='Files (tarballs, dicoms) or directories '
                        'containing files to process. Cannot be provided if '
@@ -151,8 +153,7 @@ def get_parser():
                         'If not provided, DICOMS would first be "sorted" and '
                         'subject IDs deduced by the heuristic')
     parser.add_argument('-c', '--converter',
-                        default='dcm2niix',
-                        choices=('dcm2niix', 'none'),
+                        choices=('dcm2niix', 'none'), default='dcm2niix',
                         help='tool to use for DICOM conversion. Setting to '
                         '"none" disables the actual conversion step -- useful'
                         'for testing heuristics.')
@@ -216,7 +217,7 @@ def get_parser():
                         help='custom actions to be performed on provided '
                         'files instead of regular operation.')
     parser.add_argument('-g', '--grouping', default='studyUID',
-                        choices=('studyUID', 'accession_number'),
+                        choices=('studyUID', 'accession_number', 'all', 'custom'),
                         help='How to group dicoms (default: by studyUID)')
     parser.add_argument('--minmeta', action='store_true',
                         help='Exclude dcmstack meta information in sidecar '
@@ -245,11 +246,11 @@ def process_args(args):
 
     outdir = op.abspath(args.outdir)
 
-    import etelemetry
     try:
+        import etelemetry
         latest = etelemetry.get_project("nipy/heudiconv")
     except Exception as e:
-        lgr.warning("Could not check for version updates: ", e)
+        lgr.warning("Could not check for version updates: %s", str(e))
         latest = {"version": 'Unknown'}
 
     lgr.info(INIT_MSG(packname=__packagename__,
@@ -340,7 +341,8 @@ def process_args(args):
                         seqinfo=seqinfo,
                         min_meta=args.minmeta,
                         overwrite=args.overwrite,
-                        dcmconfig=args.dcmconfig,)
+                        dcmconfig=args.dcmconfig,
+                        grouping=args.grouping,)
 
         lgr.info("PROCESSING DONE: {0}".format(
             str(dict(subject=sid, outdir=study_outdir, session=session))))

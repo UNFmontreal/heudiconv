@@ -126,7 +126,11 @@ from glob import glob
 import logging
 lgr = logging.getLogger('heudiconv')
 
-# Terminology to hamornise and use to name variables etc
+# pythons before 3.7 didn't have re.Pattern, it was some protected
+# _sre.SRE_Pattern, so let's just sample a class of the compiled regex
+re_Pattern = re.compile('.').__class__
+
+# Terminology to harmonise and use to name variables etc
 # experiment
 #  subject
 #   [session]
@@ -170,9 +174,9 @@ protocols2fix = {
     # QA
     '43b67d9139e8c7274578b7451ab21123':
         [
-         #('anat-scout.*', 'anat-scout_ses-{date}'),
+         # ('anat-scout.*', 'anat-scout_ses-{date}'),
          # do not change it so we retain _ses-{date}
-         #('anat-scout.*', 'anat-scout'),
+         # ('anat-scout.*', 'anat-scout'),
          ('BOLD_p2_s4_3\.5mm', 'func_task-rest_acq-p2-s4-3.5mm'),
          ('BOLD_p2_s4',        'func_task-rest_acq-p2-s4'),
          ('BOLD_p2_noprescannormalize', 'func-bold_task-rest_acq-p2noprescannormalize'),
@@ -254,7 +258,7 @@ protocols2fix = {
         [
             ('fmap_acq-discorr-dti-', 'fmap_acq-dwi_dir-'),
         ],
-    #'022969bfde39c2940c114edf1db3fabc':
+    # '022969bfde39c2940c114edf1db3fabc':
     #    [  # should be applied only for ses-03!
     #        ('_acq-MPRAGE_ses-02', '_acq-MPRAGE_ses-03'),
     #    ],
@@ -262,14 +266,14 @@ protocols2fix = {
     # fix per accession yet
     #    '23763823d2b9b4b09dafcadc8e8edf21':
     #        [
-    #            ('anat-T1w_acq-MPRAGE', 'anat-T1w_acq-MPRAGE_run-06'), 
+    #            ('anat-T1w_acq-MPRAGE', 'anat-T1w_acq-MPRAGE_run-06'),
     #            ('anat_T2w', 'anat_T2w_run-06'),
     #            ('fmap_acq-3mm', 'fmap_acq-3mm_run-06'),
     #        ],
 }
 # there was also screw up in the locator specification
 # so we need to fix in both
-#protocols2fix['67ae5e641ea9d487b6fdf56fb91aeb93'] = protocols2fix['022969bfde39c2940c114edf1db3fabc']
+# protocols2fix['67ae5e641ea9d487b6fdf56fb91aeb93'] = protocols2fix['022969bfde39c2940c114edf1db3fabc']
 
 # list containing StudyInstanceUID to skip -- hopefully doesn't happen too often
 dicoms2skip = [
@@ -279,8 +283,8 @@ dicoms2skip = [
 
 DEFAULT_FIELDS = {
     # Let it just be in each json file extracted
-    #'Manufacturer': "Siemens",
-    #'ManufacturersModelName': "Prisma",
+    # 'Manufacturer': "Siemens",
+    # 'ManufacturersModelName': "Prisma",
     "Acknowledgements":
         "We thank Terry Sacket and the rest of the DBIC (Dartmouth Brain Imaging "
         "Center) personnel for assistance in data collection, and "
@@ -360,24 +364,26 @@ def md5sum(string):
     m = hashlib.md5(string.encode())
     return m.hexdigest()
 
+
 def get_study_description(seqinfo):
     # Centralized so we could fix/override
     v = get_unique(seqinfo, 'study_description')
     return v
+
 
 def get_study_hash(seqinfo):
     # XXX: ad hoc hack
     return md5sum(get_study_description(seqinfo))
 
 
-def fix_canceled_runs(seqinfo, accession2run=fix_accession2run):
+def fix_canceled_runs(seqinfo):
     """Function that adds cancelme_ to known bad runs which were forgotten
     """
     accession_number = get_unique(seqinfo, 'accession_number')
-    if accession_number in accession2run:
+    if accession_number in fix_accession2run:
         lgr.info("Considering some runs possibly marked to be "
                  "canceled for accession %s", accession_number)
-        badruns = accession2run[accession_number]
+        badruns = fix_accession2run[accession_number]
         badruns_pattern = '|'.join(badruns)
         for i, s in enumerate(seqinfo):
             if re.match(badruns_pattern, s.series_id):
@@ -389,28 +395,57 @@ def fix_canceled_runs(seqinfo, accession2run=fix_accession2run):
     return seqinfo
 
 
-def fix_dbic_protocol(seqinfo, keys=series_spec_fields, subsdict=protocols2fix):
-    """Ad-hoc fixup for existing protocols
+def fix_dbic_protocol(seqinfo):
+    """Ad-hoc fixup for existing protocols.
+
+    It will operate in 3 stages on `protocols2fix` records.
+    1. consider a record which has md5sum of study_description
+    2. apply all substitutions, where key is a regular expression which
+       successfully searches (not necessarily matches, so anchor appropriately)
+       study_description
+    3. apply "catch all" substitutions in the key containing an empty string
+
+    3. is somewhat redundant since `re.compile('.*')` could match any, but is
+    kept for simplicity of its specification.
     """
+
     study_hash = get_study_hash(seqinfo)
+    study_description = get_study_description(seqinfo)
 
-    if study_hash not in subsdict:
-        raise ValueError("I don't know how to fix {0}".format(study_hash))
+    # We will consider first study specific (based on hash)
+    if study_hash in protocols2fix:
+        _apply_substitutions(seqinfo,
+                             protocols2fix[study_hash],
+                             'study (%s) specific' % study_hash)
+    # Then go through all regexps returning regex "search" result
+    # on study_description
+    for sub, substitutions in protocols2fix.items():
+        if isinstance(sub, re_Pattern) and sub.search(study_description):
+            _apply_substitutions(seqinfo,
+                                 substitutions,
+                                 '%r regex matching' % sub.pattern)
+    # and at the end - global
+    if '' in protocols2fix:
+        _apply_substitutions(seqinfo, protocols2fix[''], 'global')
 
-    # need to replace both protocol_name series_description
-    substitutions = subsdict[study_hash]
+    return seqinfo
+
+
+def _apply_substitutions(seqinfo, substitutions, subs_scope):
+    lgr.info("Considering %s substitutions", subs_scope)
     for i, s in enumerate(seqinfo):
         fixed_kwargs = dict()
-        for key in keys:
-            value = getattr(s, key)
+        # need to replace both protocol_name series_description
+        for key in series_spec_fields:
+            oldvalue = value = getattr(s, key)
             # replace all I need to replace
             for substring, replacement in substitutions:
                 value = re.sub(substring, replacement, value)
+            if oldvalue != value:
+                lgr.info(" %s: %r -> %r", key, oldvalue, value)
             fixed_kwargs[key] = value
         # namedtuples are immutable
         seqinfo[i] = s._replace(**fixed_kwargs)
-
-    return seqinfo
 
 
 def fix_seqinfo(seqinfo):
@@ -418,17 +453,14 @@ def fix_seqinfo(seqinfo):
     """
     # add cancelme to known bad runs
     seqinfo = fix_canceled_runs(seqinfo)
-    study_hash = get_study_hash(seqinfo)
-    if study_hash in protocols2fix:
-        lgr.info("Fixing up protocol for {0}".format(study_hash))
-        seqinfo = fix_dbic_protocol(seqinfo)
+    seqinfo = fix_dbic_protocol(seqinfo)
     return seqinfo
 
 
 def ls(study_session, seqinfo):
     """Additional ls output for a seqinfo"""
-    #assert len(sequences) <= 1  # expecting only a single study here
-    #seqinfo = sequences.keys()[0]
+    # assert len(sequences) <= 1  # expecting only a single study here
+    # seqinfo = sequences.keys()[0]
     return ' study hash: %s' % get_study_hash(seqinfo)
 
 
@@ -440,15 +472,14 @@ def infotodict(seqinfo):
 
     allowed template fields - follow python string module:
 
-    item: index within category 
-    subject: participant id 
+    item: index within category
+    subject: participant id
     seqitem: run number during scanning
     subindex: sub index within group
     session: scan index for longitudinal acq
     """
     seqinfo = fix_seqinfo(seqinfo)
     lgr.info("Processing %d seqinfo entries", len(seqinfo))
-    and_dicom = ('dicom', 'nii.gz')
 
     info = OrderedDict()
     skipped, skipped_unknown = [], []
@@ -471,7 +502,7 @@ def infotodict(seqinfo):
 
         template = None
         suffix = ''
-        seq = []
+        # seq = []
 
         # figure out type of image from s.image_info -- just for checking ATM
         # since we primarily rely on encoded in the protocol name information
@@ -552,11 +583,11 @@ def infotodict(seqinfo):
                 raise ValueError("Do not know image data type yet to make decision")
             seqtype_label = {
                 # might want explicit {file_index}  ?
-                # _epi for pipolar fieldmaps, see
+                # _epi for pepolar fieldmaps, see
                 # https://bids-specification.readthedocs.io/en/stable/04-modality-specific-files/01-magnetic-resonance-imaging-data.html#case-4-multiple-phase-encoded-directions-pepolar
                 'M': 'epi' if 'dir' in series_info else 'magnitude',
                 'P': 'phasediff',
-                'DIFFUSION': 'epi', # according to KODI those DWI are the EPIs we need
+                'DIFFUSION': 'epi',  # according to KODI those DWI are the EPIs we need
             }[dcm_image_iod_spec]
 
         # label for dwi as well
@@ -634,7 +665,7 @@ def infotodict(seqinfo):
             run_label,
             seqtype_label,
         ]
-        # filter tose which are None, and join with _
+        # filter those which are None, and join with _
         suffix = '_'.join(filter(bool, suffix_parts))
 
         # # .series_description in case of
@@ -736,10 +767,20 @@ def get_unique(seqinfos, attr):
     return values.pop()
 
 
-# TODO: might need to do groupping per each session and return here multiple
+# TODO: might need to do grouping per each session and return here multiple
 # hits, or may be we could just somehow demarkate that it will be multisession
-# one and so then later value parsed (again) in infotodict  would be used???
+# one and so then later value parsed (again) in infotodict would be used???
 def infotoids(seqinfos, outdir):
+    # In python 3.7.5 we would obtain odict_keys() object which would be
+    # immutable, and we would not be able to perform any substitutions if
+    # needed.  So let's make it into a regular list
+    if isinstance(seqinfos, dict) or hasattr(seqinfos, 'keys'):
+        # just some checks for a paranoid Yarik
+        raise TypeError(
+            "Expected list-like structure here, not associative array. Got %s"
+            % type(seqinfos)
+        )
+    seqinfos = list(seqinfos)
     # decide on subjid and session based on patient_id
     lgr.info("Processing sequence infos to deduce study/session")
     study_description = get_study_description(seqinfos)
@@ -788,7 +829,7 @@ def infotoids(seqinfos, outdir):
         # although we might want an explicit '=' to note the same session as
         # mentioned before?
         if len(nonsign_vals) > 1:
-            lgr.warning( #raise NotImplementedError(
+            lgr.warning(  # raise NotImplementedError(
                 "Cannot deal with multiple sessions in the same study yet!"
                 " We will process until the end of the first session"
             )
@@ -810,7 +851,7 @@ def infotoids(seqinfos, outdir):
             # ... actually the same as with nonsign_vals, we just would need to figure
             # out initial one if sign ones, and should make use of knowing
             # outdir
-            #raise NotImplementedError()
+            # raise NotImplementedError()
             # we need to look at what sessions we already have
             sessions_dir = os.path.join(outdir, locator, 'sub-' + subject)
             prior_sessions = sorted(glob(os.path.join(sessions_dir, 'ses-*')))
@@ -827,7 +868,6 @@ def infotoids(seqinfos, outdir):
                 session = os.path.basename(prior_sessions[-1])[4:] if prior_sessions else '001'
             else:
                 session = '001'
-
 
     if study_description_hash == '9d148e2a05f782273f6343507733309d':
         session = 'siemens1'
@@ -865,7 +905,7 @@ def parse_series_spec(series_spec):
     # https://github.com/ReproNim/reproin/issues/14
     # where PU: prefix is added by the scanner
     series_spec = re.sub("^[A-Z]*:", "", series_spec)
-    series_spec = re.sub("^WIP ", "", series_spec) # remove Philips WIP prefix
+    series_spec = re.sub("^WIP ", "", series_spec)  # remove Philips WIP prefix
 
     # Remove possible suffix we don't care about after __
     series_spec = series_spec.split('__', 1)[0]

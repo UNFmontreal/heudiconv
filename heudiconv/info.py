@@ -1,4 +1,4 @@
-__version__ = "0.6.0.dev1"
+__version__ = "0.6.0"
 __author__ = "HeuDiConv team and contributors"
 __url__ = "https://github.com/nipy/heudiconv"
 __packagename__ = 'heudiconv'
@@ -12,14 +12,13 @@ CLASSIFIERS = [
     'Environment :: Console',
     'Intended Audience :: Science/Research',
     'License :: OSI Approved :: Apache Software License',
-    'Programming Language :: Python :: 2.7',
     'Programming Language :: Python :: 3.5',
     'Programming Language :: Python :: 3.6',
     'Programming Language :: Python :: 3.7',
     'Topic :: Scientific/Engineering'
 ]
 
-PYTHON_REQUIRES = ">=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*"
+PYTHON_REQUIRES = ">=3.5"
 
 REQUIRES = [
     'nibabel',
@@ -27,8 +26,9 @@ REQUIRES = [
     'nipype >=1.0.0; python_version > "3.0"',
     'nipype >=1.0.0,!=1.2.1,!=1.2.2; python_version == "2.7"',
     'pathlib',
-    'dcmstack>=0.7',
+    'dcmstack>=0.8',
     'etelemetry',
+    'filelock>=3.0.12',
 ]
 
 TESTS_REQUIRES = [
@@ -42,7 +42,7 @@ TESTS_REQUIRES = [
 EXTRA_REQUIRES = {
     'tests': TESTS_REQUIRES,
     'extras': [],  # Requires patched version ATM ['dcmstack'],
-    'datalad': ['datalad']
+    'datalad': ['datalad >=0.12.2']
 }
 
 # Flatten the lists
