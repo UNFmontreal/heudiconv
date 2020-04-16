@@ -544,13 +544,13 @@ def save_converted_files(res, item_dicoms, bids_options, outtype, prefix, outnam
         is_multiecho = len(echo_times) > 1
 
         iops = sorted(list(set(
-            b.get('ImageOrientationPatient', nan)
+            str(b.get('ImageOrientationPatientDICOM', ''))
             for b in bids_metas
             if b
         )))
 
         is_multiorient = len(iops) > 1
-
+        
         ### Loop through the bids_files, set the output name and save files
         for fl, suffix, bids_file, bids_meta in zip(res_files, suffixes, bids_files, bids_metas):
 
@@ -621,11 +621,14 @@ def save_converted_files(res, item_dicoms, bids_options, outtype, prefix, outnam
                         break
             # Now check if this run is multi-orientation (v-nav or localizer)
             if bids_meta and is_multiorient and 'acq-' not in this_prefix_basename:
-                iop = bids_meta.get('ImageOrientationPatient')
-                iop_round = [round(x) for x in iop]
-                plane = np.cross(iop_round[0:3], iop_round[3:6])
-                plane = [abs(x) for x in plane]
-                slice_orient = ['saggital','coronal','axial'][plane.index(1)]
+                iop = bids_meta.get('ImageOrientationPatientDICOM')
+                iop = [round(x) for x in iop]
+                cross_prod = [
+                    iop[1]*iop[5]-iop[2]*iop[4],
+                    iop[2]*iop[3]-iop[0]*iop[5],
+                    iop[0]*iop[4]-iop[1]*iop[3]]
+                cross_prod = [abs(x) for x in cross_prod]
+                slice_orient = ['saggital','coronal','axial'][cross_prod.index(1)]
                 bids_pairs = this_prefix_basename.split('_')
                 ses_or_sub_idx = sum([bids_pair.split('-')[0] in ['sub','ses'] for bids_pair in bids_pairs])
                 bids_pairs.insert(ses_or_sub_idx,'acq-%s'%slice_orient)
