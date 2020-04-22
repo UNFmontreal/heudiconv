@@ -233,6 +233,141 @@ def prep_conversion(sid, dicoms, outdir, heuristic, converter, anon_sid,
                                     getattr(heuristic, 'DEFAULT_FIELDS', {}))
 
 
+def update_complex_name(fileinfo, this_prefix_basename, suffix):
+    """
+    Insert `_rec-<magnitude|phase>` entity into filename if data are from a sequence
+    with magnitude/phase reconstruction.
+    """
+    # Functional scans separate magnitude/phase differently
+    unsupported_types = ['_bold', '_phase']
+    if any(ut in this_prefix_basename for ut in unsupported_types):
+        return this_prefix_basename
+
+    # Check to see if it is magnitude or phase reconstruction:
+    if 'M' in fileinfo.get('ImageType'):
+        mag_or_phase = 'magnitude'
+    elif 'P' in fileinfo.get('ImageType'):
+        mag_or_phase = 'phase'
+    else:
+        mag_or_phase = suffix
+
+    # Determine scan suffix
+    filetype = '_' + this_prefix_basename.split('_')[-1]
+
+    # Insert reconstruction label
+    if not ('_rec-%s' % mag_or_phase) in this_prefix_basename:
+        # If "_rec-" is specified, prepend the 'mag_or_phase' value.
+        if '_rec-' in this_prefix_basename:
+            raise BIDSError(
+                "Rec label for images will be automatically set, remove "
+                "from heuristic"
+            )
+
+        # If not, insert "_rec-" + 'mag_or_phase' into the prefix_basename
+        # **before** "_run", "_echo" or "_sbref", whichever appears first:
+        for label in ['_dir', '_run', '_mod', '_echo', '_recording', '_proc', '_space', filetype]:
+            if label == filetype:
+                this_prefix_basename = this_prefix_basename.replace(
+                    filetype, "_rec-%s%s" % (mag_or_phase, filetype)
+                )
+                break
+            elif (label in this_prefix_basename):
+                this_prefix_basename = this_prefix_basename.replace(
+                    label, "_rec-%s%s" % (mag_or_phase, label)
+                )
+                break
+
+    return this_prefix_basename
+
+
+def update_multiecho_name(fileinfo, this_prefix_basename, echo_times):
+    """
+    Insert `_echo-<num>` entity into filename if data are from a multi-echo
+    sequence.
+    """
+    # Field maps separate echoes differently
+    unsupported_types = [
+        '_magnitude', '_magnitude1', '_magnitude2',
+        '_phasediff', '_phase1', '_phase2', '_fieldmap'
+    ]
+    if any(ut in this_prefix_basename for ut in unsupported_types):
+        return this_prefix_basename
+
+    # Get the EchoNumber from json file info.  If not present, use EchoTime
+    if 'EchoNumber' in fileinfo.keys():
+        echo_number = fileinfo['EchoNumber']
+    else:
+        echo_number = echo_times.index(fileinfo['EchoTime']) + 1
+
+    # Determine scan suffix
+    filetype = '_' + this_prefix_basename.split('_')[-1]
+
+    # Insert it **before** the following string(s), whichever appears first.
+    for label in ['_recording', '_proc', '_space', filetype]:
+        if label == filetype:
+            this_prefix_basename = this_prefix_basename.replace(
+                filetype, "_echo-%s%s" % (echo_number, filetype)
+            )
+            break
+        elif (label in this_prefix_basename):
+            this_prefix_basename = this_prefix_basename.replace(
+                label, "_echo-%s%s" % (echo_number, label)
+            )
+            break
+
+    return this_prefix_basename
+
+
+def update_uncombined_name(fileinfo, this_prefix_basename, channel_names):
+    """
+    Insert `_channel-<num>` entity into filename if data are from a sequence
+    with "save uncombined".
+    """
+    # In case any scan types separate channels differently
+    unsupported_types = []
+    if any(ut in this_prefix_basename for ut in unsupported_types):
+        return this_prefix_basename
+
+    # Determine the channel number
+    channel_number = ''.join([c for c in fileinfo['CoilString'] if c.isdigit()])
+    if not channel_number:
+        channel_number = channel_names.index(fileinfo['CoilString']) + 1
+
+    # Determine scan suffix
+    filetype = '_' + this_prefix_basename.split('_')[-1]
+
+    # Insert it **before** the following string(s), whichever appears first.
+    # Choosing to put channel near the end since it's not in the specification yet.
+    for label in ['_recording', '_proc', '_space', filetype]:
+        if label == filetype:
+            this_prefix_basename = this_prefix_basename.replace(
+                filetype, "_channel-%s%s" % (channel_number, filetype)
+            )
+            break
+        elif (label in this_prefix_basename):
+            this_prefix_basename = this_prefix_basename.replace(
+                label, "_channel-%s%s" % (channel_number, label)
+            )
+            break
+    return this_prefix_basename
+
+
+def update_mutliorient_name(bids_meta, this_prefix_basename):
+    iop = bids_meta.get('ImageOrientationPatientDICOM')
+    iop = [round(x) for x in iop]
+    cross_prod = [
+        iop[1]*iop[5]-iop[2]*iop[4],
+        iop[2]*iop[3]-iop[0]*iop[5],
+        iop[0]*iop[4]-iop[1]*iop[3]]
+    cross_prod = [abs(x) for x in cross_prod]
+    slice_orient = ['sagittal', 'coronal', 'axial'][cross_prod.index(1)]
+    bids_pairs = this_prefix_basename.split('_')
+    ses_or_sub_idx = sum([bids_pair.split('-')[0] in ['sub', 'ses'] for bids_pair in bids_pairs])
+    bids_pairs.insert(ses_or_sub_idx, 'acq-%s'%slice_orient)
+    this_prefix_basename = '_'.join(bids_pairs)
+    return this_prefix_basename
+
+
 def convert(items, converter, scaninfo_suffix, custom_callable, with_prov,
             bids_options, outdir, min_meta, overwrite, symlink=True, prov_file=None,
             dcmconfig=None):
@@ -534,23 +669,33 @@ def save_converted_files(res, item_dicoms, bids_options, outtype, prefix, outnam
         #   series. To do that, the most straightforward way is to read the
         #   echo times for all bids_files and see if they are all the same or not.
 
-        # Check for varying echo times
-        echo_times = sorted(list(set(
-            b.get('EchoTime', nan)
-            for b in bids_metas
-            if b
-        )))
+        # Collect some metadata across all images
+        echo_times, channel_names, image_types, iops = [], [], [], []
+        for metadata in bids_metas:
+            if not metadata:
+                continue
+            echo_times.append(metadata.get('EchoTime', None))
+            channel_names.append(metadata.get('CoilString', None))
+            image_types.append(metadata.get('ImageType', None))
+            iops.append(str(metadata.get('ImageOrientationPatientDICOM', None)))
+        echo_times = [v for v in echo_times if v]
+        echo_times = sorted(list(set(echo_times)))
+        channel_names = [v for v in channel_names if v]
+        channel_names = sorted(list(set(channel_names)))
+        image_types = [v for v in image_types if v]
+        iops = list(set(iops))
 
-        is_multiecho = len(echo_times) > 1
+        is_multiecho = len(echo_times) > 1  # Check for varying echo times
+        is_uncombined = len(channel_names) > 1  # Check for uncombined data
+        is_multiorient = len(iops) > 1 # Check for multiple slicing orientation
 
-        iops = sorted(list(set(
-            str(b.get('ImageOrientationPatientDICOM', ''))
-            for b in bids_metas
-            if b
-        )))
+        # Determine if data are complex (magnitude + phase)
+        magnitude_found = any(['M' in it for it in image_types])
+        phase_found = any(['P' in it for it in image_types])
+        is_complex = magnitude_found and phase_found
 
-        is_multiorient = len(iops) > 1
-        
+
+
         ### Loop through the bids_files, set the output name and save files
         for fl, suffix, bids_file, bids_meta in zip(res_files, suffixes, bids_files, bids_metas):
 
@@ -560,79 +705,29 @@ def save_converted_files(res, item_dicoms, bids_options, outtype, prefix, outnam
             # and we don't want to modify it for all the bids_files):
             this_prefix_basename = prefix_basename
 
-            # _sbref sequences reconstructing magnitude and phase generate
-            # two NIfTI files IN THE SAME SERIES, so we cannot just add
-            # the suffix, if we want to be bids compliant:
-            if bids_meta and this_prefix_basename.endswith('_sbref') \
-                    and len(suffixes) > len(echo_times):
-                if len(suffixes) != len(echo_times)*2:
-                    lgr.warning(
-                        "Got %d suffixes for %d echo times, which isn't "
-                        "multiple of two as if it was magnitude + phase pairs",
-                        len(suffixes), len(echo_times)
-                    )
-                # Check to see if it is magnitude or phase reconstruction:
-                if 'M' in bids_meta.get('ImageType'):
-                    mag_or_phase = 'magnitude'
-                elif 'P' in bids_meta.get('ImageType'):
-                    mag_or_phase = 'phase'
-                else:
-                    mag_or_phase = suffix
+            # Update name if multi-echo
+            if bids_file and is_multiecho:
+                this_prefix_basename = update_multiecho_name(
+                    bids_meta, this_prefix_basename, echo_times
+                )
 
-                # Insert reconstruction label
-                if not ("_rec-%s" % mag_or_phase) in this_prefix_basename:
+            # Update name if complex data
+            if bids_file and is_complex:
+                this_prefix_basename = update_complex_name(
+                    bids_meta, this_prefix_basename, suffix
+                )
 
-                    # If "_rec-" is specified, prepend the 'mag_or_phase' value.
-                    if ('_rec-' in this_prefix_basename):
-                        raise BIDSError(
-                        "Reconstruction label for multi-echo single-band"
-                        " reference images will be automatically set, remove"
-                        " from heuristic"
-                        )
+            # Update name if uncombined (channel-level) data
+            if bids_file and is_uncombined:
+                this_prefix_basename = update_uncombined_name(
+                    bids_meta, this_prefix_basename, channel_names
+                )
 
-                    # If not, insert "_rec-" + 'mag_or_phase' into the prefix_basename
-                    #   **before** "_run", "_echo" or "_sbref", whichever appears first:
-                    for label in ['_run', '_echo', '_sbref']:
-                        if (label in this_prefix_basename):
-                            this_prefix_basename = this_prefix_basename.replace(
-                                label, "_rec-%s%s" % (mag_or_phase, label)
-                            )
-                            break
-
-            # Now check if this run is multi-echo
-            # (Note: it can be _sbref and multiecho, so don't use "elif"):
-            # For multi-echo sequences, we have to specify the echo number in
-            # the file name:
-            if bids_meta and is_multiecho:
-                # Get the EchoNumber from json file info.  If not present, use EchoTime
-                if 'EchoNumber' in bids_meta:
-                    echo_number = bids_meta['EchoNumber']
-                else:
-                    echo_number = echo_times.index(bids_meta['EchoTime']) + 1
-
-                supported_multiecho = ['_bold', '_phase', '_epi', '_sbref', '_T1w', '_PDT2']
-                # Now, decide where to insert it.
-                # Insert it **before** the following string(s), whichever appears first.
-                for imgtype in supported_multiecho:
-                    if (imgtype in this_prefix_basename):
-                        this_prefix_basename = this_prefix_basename.replace(
-                            imgtype, "_echo-%d%s" % (echo_number, imgtype)
-                        )
-                        break
-            # Now check if this run is multi-orientation (v-nav or localizer)
-            if bids_meta and is_multiorient and 'acq-' not in this_prefix_basename:
-                iop = bids_meta.get('ImageOrientationPatientDICOM')
-                iop = [round(x) for x in iop]
-                cross_prod = [
-                    iop[1]*iop[5]-iop[2]*iop[4],
-                    iop[2]*iop[3]-iop[0]*iop[5],
-                    iop[0]*iop[4]-iop[1]*iop[3]]
-                cross_prod = [abs(x) for x in cross_prod]
-                slice_orient = ['saggital','coronal','axial'][cross_prod.index(1)]
-                bids_pairs = this_prefix_basename.split('_')
-                ses_or_sub_idx = sum([bids_pair.split('-')[0] in ['sub','ses'] for bids_pair in bids_pairs])
-                bids_pairs.insert(ses_or_sub_idx,'acq-%s'%slice_orient)
-                this_prefix_basename = '_'.join(bids_pairs)
+            # Update name if multiple orientation (localize v-nav)
+            if bids_file and is_multiorient:
+                this_prefix_basename = update_mutliorient_name(
+                    bids_meta, this_prefix_basename
+                )
 
             # Fallback option:
             # If we have failed to modify this_prefix_basename, because it didn't fall
