@@ -13,6 +13,7 @@ from pathlib import Path
 from collections import namedtuple
 from glob import glob
 from subprocess import check_output
+from datetime import datetime
 
 from nipype.utils.filemanip import which
 
@@ -189,7 +190,7 @@ def assure_no_file_exists(path):
         os.unlink(path)
 
 
-def save_json(filename, data, indent=4, sort_keys=True, pretty=False):
+def save_json(filename, data, indent=2, sort_keys=True, pretty=False):
     """Save data to a json file
 
     Parameters
@@ -204,11 +205,25 @@ def save_json(filename, data, indent=4, sort_keys=True, pretty=False):
 
     """
     assure_no_file_exists(filename)
+    dumps_kw = dict(sort_keys=sort_keys, indent=indent)
+    j = None
+    if pretty:
+        try:
+            j = json_dumps_pretty(data, **dumps_kw)
+        except AssertionError as exc:
+            pretty = False
+            lgr.warning(
+                "Prettyfication of .json failed (%s).  "
+                "Original .json will be kept as is.  Please share (if you "
+                "could) "
+                "that file (%s) with HeuDiConv developers"
+                % (str(exc), filename)
+            )
+    if not pretty:
+        j = _canonical_dumps(data, **dumps_kw)
+    assert j is not None  # one way or another it should have been set to a str
     with open(filename, 'w') as fp:
-        fp.write(
-            (json_dumps_pretty if pretty else _canonical_dumps)(
-                data, sort_keys=sort_keys, indent=indent)
-        )
+        fp.write(j)
 
 
 def json_dumps_pretty(j, indent=2, sort_keys=True):
@@ -253,25 +268,9 @@ def json_dumps_pretty(j, indent=2, sort_keys=True):
 def treat_infofile(filename):
     """Tune up generated .json file (slim down, pretty-print for humans).
     """
-    with open(filename) as f:
-        j = json.load(f)
-
+    j = load_json(filename)
     j_slim = slim_down_info(j)
-    dumps_kw = dict(indent=2, sort_keys=True)
-    try:
-        j_pretty = json_dumps_pretty(j_slim, **dumps_kw)
-    except AssertionError as exc:
-        lgr.warning(
-            "Prettyfication of .json failed (%s).  "
-            "Original .json will be kept as is.  Please share (if you could) "
-            "that file (%s) with HeuDiConv developers"
-            % (str(exc), filename)
-        )
-        j_pretty = json.dumps(j_slim, **dumps_kw)
-
-    set_readonly(filename, False)
-    with open(filename, 'wt') as fp:
-        fp.write(j_pretty)
+    save_json(filename, j_slim, sort_keys=True, pretty=True)
     set_readonly(filename)
 
 
@@ -320,7 +319,7 @@ def load_heuristic(heuristic):
         path, fname = op.split(heuristic_file)
         try:
             old_syspath = sys.path[:]
-            sys.path.append(path)
+            sys.path.insert(0, path)
             mod = __import__(fname.split('.')[0])
             mod.filename = heuristic_file
         finally:
@@ -356,18 +355,35 @@ def get_known_heuristics_with_descriptions():
 
 
 def safe_copyfile(src, dest, overwrite=False):
-    """Copy file but blow if destination name already exists
+    """Copy file but blow if destination name already exists"""
+    return _safe_op_file(src, dest, "copyfile", overwrite=overwrite)
+
+
+def safe_movefile(src, dest, overwrite=False):
+    """Move file but blow if destination name already exists"""
+    return _safe_op_file(src, dest, "move", overwrite=overwrite)
+
+
+def _safe_op_file(src, dest, operation, overwrite=False):
+    """Copy or move file but blow if destination name already exists
+
+    Parameters
+    ----------
+    operation: str, {copyfile, move}
     """
     if op.isdir(dest):
         dest = op.join(dest, op.basename(src))
+    if op.realpath(src) == op.realpath(dest):
+        lgr.debug("Source %s = destination %s", src, dest)
+        return
     if op.lexists(dest):
         if not overwrite:
             raise RuntimeError(
-                "was asked to copy %s but destination already exists: %s"
-                % (src, dest)
+                "was asked to %s %s but destination already exists: %s"
+                % (operation, src, dest)
             )
         os.unlink(dest)
-    shutil.copyfile(src, dest)
+    getattr(shutil, operation)(src, dest)
 
 
 # Globals to check filewriting permissions
@@ -508,3 +524,33 @@ def get_typed_attr(obj, attr, _type, default=None):
     except (TypeError, ValueError):
         return default
     return val
+
+
+def get_datetime(date, time, *, microseconds=True):
+    """
+    Combine date and time from dicom to isoformat.
+
+    Parameters
+    ----------
+    date : str
+        Date in YYYYMMDD format.
+    time : str
+        Time in either HHMMSS.ffffff format or HHMMSS format.
+    microseconds: bool, optional
+        Either to include microseconds in the output
+
+    Returns
+    -------
+    datetime_str : str
+        Combined date and time in ISO format, with microseconds as
+        if fraction was provided in 'time', and 'microseconds' was
+        True.
+    """
+    if '.' not in time:
+        # add dummy microseconds if not available for strptime to parse
+        time += '.000000'
+    td = time + ':' + date
+    datetime_str = datetime.strptime(td, '%H%M%S.%f:%Y%m%d').isoformat()
+    if not microseconds:
+        datetime_str = datetime_str.split('.', 1)[0]
+    return datetime_str
