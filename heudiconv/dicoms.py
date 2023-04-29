@@ -186,6 +186,7 @@ def group_dicoms_into_seqinfos(
         [list[str], Optional[Callable[[dcm.dataset.Dataset], Any]], type[SeqInfo]], Any
     ]
     | None = None,
+    custom_seqinfo: CustomSeqinfoT | None = None,
 ) -> dict[Optional[str], dict[SeqInfo, list[str]]]:
     ...
 
@@ -203,7 +204,7 @@ def group_dicoms_into_seqinfos(
         [list[str], Optional[Callable[[dcm.dataset.Dataset], Any]], type[SeqInfo]], Any
     ]
     | None = None,
-     custom_seqinfo: CustomSeqinfoT | None = None,
+    custom_seqinfo: CustomSeqinfoT | None = None,
 ) -> dict[SeqInfo, list[str]]:
     ...
 
