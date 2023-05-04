@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional
+import logging
+from typing import Any, Optional
 
+from heudiconv.dicoms import dw
 from heudiconv.utils import SeqInfo
+
+lgr = logging.getLogger('heudiconv')
 
 
 def create_key(
@@ -13,6 +17,20 @@ def create_key(
     if template is None or not template:
         raise ValueError("Template must be a valid format string")
     return (template, outtype, annotation_classes)
+
+
+def custom_seqinfo(wrapper: dw.Wrapper, series_files: list[str], **kw: Any) -> tuple[str, str]:
+    # Just a dummy demo for what custom_seqinfo could get/do
+    # for already loaded DICOM data, and including storing/returning
+    # the sample series file as was requested
+    # in https://github.com/nipy/heudiconv/pull/333
+    from nibabel.nicom.dicomwrappers import WrapperError
+    try:
+        affine = wrapper.affine.tostring()
+    except WrapperError:
+        lgr.exception("Errored out while obtaining/converting affine")
+        affine = None
+    return affine, series_files[0]
 
 
 def infotodict(
