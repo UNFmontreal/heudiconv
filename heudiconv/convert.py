@@ -1030,14 +1030,14 @@ def save_converted_files(
                         bids_meta, this_prefix_basename
                     )
 
-                if is_uncombined:
-                    this_prefix_basename = update_uncombined_name(
-                        bids_meta, this_prefix_basename, channel_names_lst
-                    )
-
                 if is_multiorient:
                     this_prefix_basename = update_multiorient_name(
                         bids_meta, this_prefix_basename
+                    )
+
+                if is_uncombined:
+                    this_prefix_basename = update_uncombined_name(
+                        bids_meta, this_prefix_basename, channel_names_lst
                     )
 
             # Fallback option:
